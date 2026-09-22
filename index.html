@@ -1769,6 +1769,8 @@ function handleAuthChange(user){
     document.getElementById('authPassword').value = '';
     setAuthError(null);
     pullFromCloudOnLogin(user.uid);
+  } else {
+    detachCloudListener();
   }
   renderAccountSection();
   var logoutRow = document.getElementById('logoutRow');
@@ -1784,7 +1786,7 @@ function pullFromCloudOnLogin(uid){
       var remote = snap.data();
       state = Object.assign(defaultState(), remote.state || {});
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
-      applyTheme(); updateIdentity(); refreshAll();
+      applyTheme(); updateIdentity(); refreshAll(); setupHomeScreenManifest();
       showToast('Synced with your account');
     } else {
       var hasRealLocalData = state.transactions.length>0 || state.accounts.some(function(a){ return a.type==='bank'; });
@@ -1797,12 +1799,36 @@ function pullFromCloudOnLogin(uid){
         cloudDocRef(uid).set({ state: state, updatedAt: Date.now() });
       }
     }
+    attachCloudListener(uid);
   }).catch(function(e){ console.warn('cloud sync failed', e); });
 }
+// Keeps every logged-in device in sync live: whenever the Firestore doc changes
+// (from THIS device or any other), this fires. `hasPendingWrites` is true only for
+// this client's own not-yet-acknowledged write — that's our own change echoing
+// back, already applied locally, so it's skipped. Anything else is a genuine
+// change from another device (or the console), which gets pulled in here.
+var cloudUnsub = null;
+function attachCloudListener(uid){
+  detachCloudListener();
+  cloudUnsub = cloudDocRef(uid).onSnapshot(function(snap){
+    if (!snap.exists || snap.metadata.hasPendingWrites) return;
+    var remote = snap.data();
+    state = Object.assign(defaultState(), remote.state || {});
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
+    applyTheme(); updateIdentity(); refreshAll(); setupHomeScreenManifest();
+  }, function(err){ console.warn('cloud listener error', err); });
+}
+function detachCloudListener(){
+  if (cloudUnsub){ cloudUnsub(); cloudUnsub = null; }
+}
+var pushDebounceTimer = null;
 function pushToCloud(){
   if (!firebaseReady || !currentUser) return;
-  try { cloudDocRef(currentUser.uid).set({ state: state, updatedAt: Date.now() }); }
-  catch(e){ console.warn('cloud save failed', e); }
+  clearTimeout(pushDebounceTimer);
+  pushDebounceTimer = setTimeout(function(){
+    try { cloudDocRef(currentUser.uid).set({ state: state, updatedAt: Date.now() }); }
+    catch(e){ console.warn('cloud save failed', e); }
+  }, 400);
 }
 
 function setAcctView(view){
