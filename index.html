@@ -487,26 +487,6 @@
             <div style="font-size:13.5px;">Signed in as <strong id="acctEmailLabel"></strong></div>
             <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Your data syncs automatically to this account.</div>
           </div>
-
-          <div id="acctLoginView" style="display:none;">
-            <div class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email"></div>
-            <div class="field"><label for="authPassword">Password</label><input type="password" id="authPassword" placeholder="At least 6 characters" autocomplete="current-password"></div>
-            <div id="authError" style="display:none; color:var(--danger); font-size:12px; margin-top:6px;"></div>
-            <button class="btn primary" id="authSubmitBtn">Log in</button>
-            <button type="button" class="link-btn" id="forgotPasswordBtn" style="display:block; margin:4px auto 0;">Forgot password?</button>
-            <button type="button" class="btn ghost" id="authToggleModeBtn" style="margin-top:8px;">Need an account? Sign up</button>
-          </div>
-
-          <div id="acctForgotView" style="display:none;">
-            <div class="field"><label for="forgotEmail">Email</label><input type="email" id="forgotEmail" placeholder="you@example.com" autocomplete="email"></div>
-            <div id="forgotError" style="display:none; color:var(--danger); font-size:12px; margin-top:6px;"></div>
-            <button class="btn primary" id="forgotSendBtn">Send reset email</button>
-            <button type="button" class="btn ghost" id="forgotBackBtn" style="margin-top:8px;">Back to log in</button>
-          </div>
-          <div id="acctForgotSentView" style="display:none;">
-            <p style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;" id="forgotSentMsg"></p>
-            <button class="btn primary" id="forgotSentBackBtn">Back to log in</button>
-          </div>
         </div>
       </div>
       <div class="prof-section">
@@ -613,7 +593,7 @@
   </div>
 
   <!-- RESET PASSWORD (via emailed link) -->
-  <div class="overlay center" id="ovResetPassword">
+  <div class="overlay center" id="ovResetPassword" style="z-index:70;">
     <div class="sheet dialog" style="max-width:320px;">
       <h3>Set a new password</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:4px;">for <strong id="resetEmailLabel"></strong></p>
@@ -690,6 +670,46 @@
       <button class="action-item" data-onb="bank"><div class="ai-ic" style="background:var(--accent-soft);">🏦</div><div><div class="ai-t">Add bank account</div></div></button>
     </div>
     <button class="link-btn" id="onbSkip">Skip for now</button>
+  </div>
+
+  <!-- AUTH GATE: the app itself is hidden behind this until login succeeds -->
+  <div class="onb-overlay" id="authGate" style="display:none; z-index:60;">
+    <div class="onb-mark">📒</div>
+    <h1 id="authGateTitle">Passbook</h1>
+    <p id="authGateSubtitle">Log in to access your data.</p>
+
+    <div style="flex:1; display:flex; flex-direction:column; justify-content:center; gap:10px; max-width:300px; margin:0 auto; width:100%; text-align:left;">
+
+      <div id="gateChecking" style="display:none; text-align:center;">
+        <p style="font-size:12.5px; color:var(--ink-soft);">Checking your session…</p>
+      </div>
+
+      <div id="gateNotConfigured" style="display:none; text-align:center;">
+        <p style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">Cloud login isn't available in this environment right now.</p>
+        <button class="btn primary" id="gateContinueOfflineBtn" style="margin-top:14px;">Continue without an account</button>
+      </div>
+
+      <div id="gateLoginView" style="display:none;">
+        <div class="field"><label for="gateEmail">Email</label><input type="email" id="gateEmail" placeholder="you@example.com" autocomplete="email"></div>
+        <div class="field"><label for="gatePassword">Password</label><input type="password" id="gatePassword" placeholder="At least 6 characters" autocomplete="current-password"></div>
+        <div id="gateAuthError" style="display:none; color:var(--danger); font-size:12px; margin-top:6px;"></div>
+        <button class="btn primary" id="gateSubmitBtn">Log in</button>
+        <button type="button" class="link-btn" id="gateForgotBtn" style="display:block; margin:4px auto 0;">Forgot password?</button>
+        <button type="button" class="btn ghost" id="gateToggleModeBtn" style="margin-top:8px;">Need an account? Sign up</button>
+      </div>
+
+      <div id="gateForgotView" style="display:none;">
+        <div class="field"><label for="gateForgotEmail">Email</label><input type="email" id="gateForgotEmail" placeholder="you@example.com" autocomplete="email"></div>
+        <div id="gateForgotError" style="display:none; color:var(--danger); font-size:12px; margin-top:6px;"></div>
+        <button class="btn primary" id="gateForgotSendBtn">Send reset email</button>
+        <button type="button" class="btn ghost" id="gateForgotBackBtn" style="margin-top:8px;">Back to log in</button>
+      </div>
+      <div id="gateForgotSentView" style="display:none; text-align:center;">
+        <p style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;" id="gateForgotSentMsg"></p>
+        <button class="btn primary" id="gateForgotSentBackBtn">Back to log in</button>
+      </div>
+
+    </div>
   </div>
 
 </div>
@@ -1762,17 +1782,20 @@ function tryInitFirebase(){
   }
 }
 
+var bypassedLogin = false;
 function handleAuthChange(user){
   currentUser = user;
+  authResolved = true;
   if (user){
-    document.getElementById('authEmail').value = '';
-    document.getElementById('authPassword').value = '';
-    setAuthError(null);
+    document.getElementById('gateEmail').value = '';
+    document.getElementById('gatePassword').value = '';
+    setGateError(null);
     pullFromCloudOnLogin(user.uid);
   } else {
     detachCloudListener();
   }
   renderAccountSection();
+  updateAppGate();
   var logoutRow = document.getElementById('logoutRow');
   if (logoutRow) logoutRow.style.display = (firebaseReady && currentUser) ? '' : 'none';
 }
@@ -1787,6 +1810,7 @@ function pullFromCloudOnLogin(uid){
       state = Object.assign(defaultState(), remote.state || {});
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
       applyTheme(); updateIdentity(); refreshAll(); setupHomeScreenManifest();
+      document.getElementById('onboarding').style.display = state.onboarded ? 'none' : 'flex';
       showToast('Synced with your account');
     } else {
       var hasRealLocalData = state.transactions.length>0 || state.accounts.some(function(a){ return a.type==='bank'; });
@@ -1816,6 +1840,7 @@ function attachCloudListener(uid){
     state = Object.assign(defaultState(), remote.state || {});
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
     applyTheme(); updateIdentity(); refreshAll(); setupHomeScreenManifest();
+    document.getElementById('onboarding').style.display = state.onboarded ? 'none' : 'flex';
   }, function(err){ console.warn('cloud listener error', err); });
 }
 function detachCloudListener(){
@@ -1831,24 +1856,107 @@ function pushToCloud(){
   }, 400);
 }
 
-function setAcctView(view){
-  ['acctNotConfigured','acctSignedIn','acctLoginView','acctForgotView','acctForgotSentView'].forEach(function(id){
+/* ---------------- auth gate (full-screen, blocks the app until logged in) ---------------- */
+var authResolved = false;
+function updateAppGate(){
+  var appEl = document.getElementById('app-shell') || null; // not used; app content lives in header/main/nav directly
+  var gateEl = document.getElementById('authGate');
+  var header = document.querySelector('header.top');
+  var main = document.getElementById('content');
+  var nav = document.querySelector('nav.bottom-nav');
+  var fab = document.getElementById('fabAdd');
+
+  if (!firebaseReady){
+    // Cloud auth isn't available here (no config, or the script was blocked) —
+    // run the app offline rather than lock the person out entirely.
+    gateEl.style.display = 'none';
+    [header, main, nav].forEach(function(el){ if (el) el.style.display = ''; });
+    return;
+  }
+  if (bypassedLogin || currentUser){
+    gateEl.style.display = 'none';
+    [header, main, nav].forEach(function(el){ if (el) el.style.display = ''; });
+    return;
+  }
+  // Not logged in (or still checking): hide the app, show the gate.
+  [header, main, nav].forEach(function(el){ if (el) el.style.display = 'none'; });
+  gateEl.style.display = 'flex';
+  if (!authResolved) setGateView('gateChecking');
+  else { setGateView('gateLoginView'); updateGateModeUI(); }
+}
+function setGateView(view){
+  ['gateChecking','gateNotConfigured','gateLoginView','gateForgotView','gateForgotSentView'].forEach(function(id){
     document.getElementById(id).style.display = (id===view) ? '' : 'none';
   });
 }
-function setAuthError(msg){
-  var el = document.getElementById('authError');
+function setGateError(msg){
+  var el = document.getElementById('gateAuthError');
   if (!msg){ el.style.display='none'; el.textContent=''; return; }
   el.textContent = msg; el.style.display = 'block';
 }
-function setForgotError(msg){
-  var el = document.getElementById('forgotError');
+function setGateForgotError(msg){
+  var el = document.getElementById('gateForgotError');
   if (!msg){ el.style.display='none'; el.textContent=''; return; }
   el.textContent = msg; el.style.display = 'block';
 }
-function updateAuthModeUI(){
-  document.getElementById('authSubmitBtn').textContent = authMode==='login' ? 'Log in' : 'Sign up';
-  document.getElementById('authToggleModeBtn').textContent = authMode==='login' ? 'Need an account? Sign up' : 'Already have an account? Log in';
+function updateGateModeUI(){
+  document.getElementById('gateSubmitBtn').textContent = authMode==='login' ? 'Log in' : 'Sign up';
+  document.getElementById('gateToggleModeBtn').textContent = authMode==='login' ? 'Need an account? Sign up' : 'Already have an account? Log in';
+  document.getElementById('authGateSubtitle').textContent = authMode==='login' ? 'Log in to access your data.' : 'Create an account to get started.';
+}
+document.getElementById('gateToggleModeBtn').addEventListener('click', function(){
+  authMode = authMode==='login' ? 'signup' : 'login';
+  setGateError(null);
+  updateGateModeUI();
+});
+document.getElementById('gateSubmitBtn').addEventListener('click', function(){
+  if (!firebaseReady) return;
+  var email = document.getElementById('gateEmail').value.trim();
+  var password = document.getElementById('gatePassword').value;
+  if (!email || !password){ setGateError('Enter an email and password.'); return; }
+  setGateError(null);
+  var btn = document.getElementById('gateSubmitBtn');
+  var original = authMode==='login' ? 'Log in' : 'Sign up';
+  btn.disabled = true; btn.textContent = authMode==='login' ? 'Logging in…' : 'Signing up…';
+  var task = authMode==='login' ? fbAuth.signInWithEmailAndPassword(email, password) : fbAuth.createUserWithEmailAndPassword(email, password);
+  task.catch(function(e){
+    setGateError(e.message || 'Something went wrong — try again.');
+    btn.disabled = false; btn.textContent = original;
+  });
+});
+document.getElementById('gateForgotBtn').addEventListener('click', function(){
+  document.getElementById('gateForgotEmail').value = document.getElementById('gateEmail').value.trim();
+  setGateForgotError(null);
+  setGateView('gateForgotView');
+});
+document.getElementById('gateForgotBackBtn').addEventListener('click', function(){ setGateView('gateLoginView'); updateGateModeUI(); });
+document.getElementById('gateForgotSentBackBtn').addEventListener('click', function(){ setGateView('gateLoginView'); updateGateModeUI(); });
+document.getElementById('gateForgotSendBtn').addEventListener('click', function(){
+  if (!firebaseReady) return;
+  var email = document.getElementById('gateForgotEmail').value.trim();
+  if (!email){ setGateForgotError('Enter your email address.'); return; }
+  setGateForgotError(null);
+  var btn = document.getElementById('gateForgotSendBtn');
+  var original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Sending…';
+  function showSent(){
+    document.getElementById('gateForgotSentMsg').textContent = 'If '+email+' is registered, we\'ve sent an email with a link to reset your password.';
+    setGateView('gateForgotSentView');
+  }
+  fbAuth.sendPasswordResetEmail(email).then(showSent).catch(function(e){
+    if (e.code==='auth/user-not-found') showSent();
+    else setGateForgotError(e.message || 'Could not send reset email. Try again.');
+  }).finally(function(){ btn.disabled = false; btn.textContent = original; });
+});
+document.getElementById('gateContinueOfflineBtn').addEventListener('click', function(){
+  bypassedLogin = true;
+  updateAppGate();
+});
+
+function setAcctView(view){
+  ['acctNotConfigured','acctSignedIn'].forEach(function(id){
+    document.getElementById(id).style.display = (id===view) ? '' : 'none';
+  });
 }
 function renderAccountSection(){
   if (!firebaseReady){ setAcctView('acctNotConfigured'); return; }
@@ -1857,57 +1965,13 @@ function renderAccountSection(){
     setAcctView('acctSignedIn');
     return;
   }
-  setAcctView('acctLoginView');
-  updateAuthModeUI();
+  setAcctView('acctNotConfigured');
 }
-document.getElementById('authToggleModeBtn').addEventListener('click', function(){
-  authMode = authMode==='login' ? 'signup' : 'login';
-  setAuthError(null);
-  updateAuthModeUI();
-});
-document.getElementById('authSubmitBtn').addEventListener('click', function(){
-  if (!firebaseReady) return;
-  var email = document.getElementById('authEmail').value.trim();
-  var password = document.getElementById('authPassword').value;
-  if (!email || !password){ setAuthError('Enter an email and password.'); return; }
-  setAuthError(null);
-  var btn = document.getElementById('authSubmitBtn');
-  var original = authMode==='login' ? 'Log in' : 'Sign up';
-  btn.disabled = true; btn.textContent = authMode==='login' ? 'Logging in…' : 'Signing up…';
-  var task = authMode==='login' ? fbAuth.signInWithEmailAndPassword(email, password) : fbAuth.createUserWithEmailAndPassword(email, password);
-  task.catch(function(e){
-    setAuthError(e.message || 'Something went wrong — try again.');
-    btn.disabled = false; btn.textContent = original;
-  });
-});
-document.getElementById('forgotPasswordBtn').addEventListener('click', function(){
-  document.getElementById('forgotEmail').value = document.getElementById('authEmail').value.trim();
-  setForgotError(null);
-  setAcctView('acctForgotView');
-});
-document.getElementById('forgotBackBtn').addEventListener('click', function(){ setAcctView('acctLoginView'); });
-document.getElementById('forgotSentBackBtn').addEventListener('click', function(){ setAcctView('acctLoginView'); });
-document.getElementById('forgotSendBtn').addEventListener('click', function(){
-  if (!firebaseReady) return;
-  var email = document.getElementById('forgotEmail').value.trim();
-  if (!email){ setForgotError('Enter your email address.'); return; }
-  setForgotError(null);
-  var btn = document.getElementById('forgotSendBtn');
-  var original = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Sending…';
-  function showSent(){
-    document.getElementById('forgotSentMsg').textContent = 'If '+email+' is registered, we\'ve sent an email with a link to reset your password.';
-    setAcctView('acctForgotSentView');
-  }
-  fbAuth.sendPasswordResetEmail(email).then(showSent).catch(function(e){
-    if (e.code==='auth/user-not-found') showSent();
-    else setForgotError(e.message || 'Could not send reset email. Try again.');
-  }).finally(function(){ btn.disabled = false; btn.textContent = original; });
-});
 document.getElementById('logoutRow').addEventListener('click', function(){
   confirmDialog('Log out?', 'You can log back in anytime to resync your data.', function(){
     fbAuth.signOut();
   });
+
 });
 function checkForPasswordResetLink(){
   if (!firebaseReady) return;
@@ -1976,6 +2040,7 @@ ensureCashAccount();
 applyTheme();
 updateIdentity();
 tryInitFirebase();
+updateAppGate();
 checkForPasswordResetLink();
 renderAccountSection();
 if (!state.onboarded){
