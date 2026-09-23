@@ -331,9 +331,18 @@
   .cal-cell {
     aspect-ratio: 1/1; border-radius: 10px; display:flex; flex-direction:column; align-items:center; justify-content:center;
     font-size: 12px; background: var(--surface); cursor:pointer; gap:1px; border:1px solid transparent;
+    position: relative;
   }
   .cal-cell.empty { background:none; cursor:default; }
   .cal-cell.today { border-color: var(--accent); }
+  .cal-cell.selected { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .cal-cell.selected .cd-amt { color: var(--accent-ink); opacity: .85; }
+  .cal-cell.selected .cd-amt.inc { color: var(--accent-ink); }
+  .cal-cell.today.selected::after {
+    content: ''; position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%);
+    width: 4px; height: 4px; border-radius: 50%; background: var(--accent-ink);
+  }
+  .cal-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .cal-cell .cd-amt { font-size: 8.5px; color: var(--warn); font-weight:600; }
   .cal-cell .cd-amt.inc { color: var(--accent); }
 
@@ -1314,13 +1323,15 @@ function renderCalendar(){
   for (var i=0;i<startDow;i++){ var e=document.createElement('div'); e.className='cal-cell empty'; grid.appendChild(e); }
   for (var d=1; d<=daysInMonth; d++){
     var iso = calYear+'-'+String(calMonth+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
-    var cell = document.createElement('div'); cell.className='cal-cell'+(iso===todayIso?' today':'');
+    var cell = document.createElement('div');
+    cell.className = 'cal-cell' + (iso===todayIso?' today':'') + (iso===calSelectedDate?' selected':'');
+    cell.setAttribute('tabindex','0');
     var t = dayTotals(iso);
     var amtHtml='';
     if (t.exp>0) amtHtml += '<div class="cd-amt">'+compactAmt(t.exp)+'</div>';
     if (t.inc>0) amtHtml += '<div class="cd-amt inc">'+compactAmt(t.inc)+'</div>';
     cell.innerHTML = '<span>'+d+'</span>'+amtHtml;
-    cell.addEventListener('click', function(iso2){ return function(){ calSelectedDate=iso2; renderCalDayList(); }; }(iso));
+    cell.addEventListener('click', function(iso2){ return function(){ calSelectedDate=iso2; renderCalendar(); }; }(iso));
     grid.appendChild(cell);
   }
   if (!calSelectedDate || calSelectedDate.slice(0,7) !== (calYear+'-'+String(calMonth+1).padStart(2,'0'))) {
