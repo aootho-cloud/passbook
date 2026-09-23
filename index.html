@@ -230,7 +230,7 @@
   /* sheets & modals */
   .overlay {
     position: absolute; inset: 0; background: rgba(10,16,13,0.42); display: none;
-    align-items: flex-end; z-index: 30; backdrop-filter: blur(1px);
+    align-items: flex-end; z-index: 55; backdrop-filter: blur(1px);
   }
   .overlay.center { align-items: center; justify-content: center; padding: 24px; }
   .overlay.show { display: flex; }
@@ -262,6 +262,14 @@
     background: var(--surface-2); font-size: 15px; outline: none;
   }
   .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); background: var(--surface); }
+  .pw-wrap { position: relative; }
+  .pw-wrap input { width: 100%; padding-right: 42px; }
+  .pw-toggle {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; cursor: pointer; font-size: 16px; color: var(--ink-faint);
+    padding: 8px; line-height: 1; min-width: 32px; min-height: 32px;
+  }
+  .pw-toggle.revealed { color: var(--accent); }
   .field textarea { resize: vertical; min-height: 56px; }
   .amount-input { font-family:'Fraunces',serif; font-size: 26px !important; font-weight:500; padding: 10px 13px !important; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -597,7 +605,12 @@
     <div class="sheet dialog" style="max-width:320px;">
       <h3>Set a new password</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:4px;">for <strong id="resetEmailLabel"></strong></p>
-      <div class="field"><label for="resetNewPassword">New password</label><input type="password" id="resetNewPassword" placeholder="At least 6 characters" autocomplete="new-password"></div>
+      <div class="field"><label for="resetNewPassword">New password</label>
+        <div class="pw-wrap">
+          <input type="password" id="resetNewPassword" placeholder="At least 6 characters" autocomplete="new-password">
+          <button type="button" class="pw-toggle" data-target="resetNewPassword" aria-label="Show password">👁</button>
+        </div>
+      </div>
       <div id="resetError" style="display:none; color:var(--danger); font-size:12px; margin-top:6px;"></div>
       <button class="btn primary" id="resetConfirmBtn">Set new password</button>
     </div>
@@ -691,7 +704,12 @@
 
       <div id="gateLoginView" style="display:none;">
         <div class="field"><label for="gateEmail">Email</label><input type="email" id="gateEmail" placeholder="you@example.com" autocomplete="email"></div>
-        <div class="field"><label for="gatePassword">Password</label><input type="password" id="gatePassword" placeholder="At least 6 characters" autocomplete="current-password"></div>
+        <div class="field"><label for="gatePassword">Password</label>
+          <div class="pw-wrap">
+            <input type="password" id="gatePassword" placeholder="At least 6 characters" autocomplete="current-password">
+            <button type="button" class="pw-toggle" data-target="gatePassword" aria-label="Show password">👁</button>
+          </div>
+        </div>
         <div id="gateAuthError" style="display:none; color:var(--danger); font-size:12px; margin-top:6px;"></div>
         <button class="btn primary" id="gateSubmitBtn">Log in</button>
         <button type="button" class="link-btn" id="gateForgotBtn" style="display:block; margin:4px auto 0;">Forgot password?</button>
@@ -1714,6 +1732,19 @@ document.querySelectorAll('[data-onb]').forEach(function(btn){
 document.getElementById('onbSkip').addEventListener('click', function(){
   state.onboarded = true; saveState();
   document.getElementById('onboarding').style.display='none';
+});
+
+/* ---------------- password show/hide toggles ---------------- */
+document.querySelectorAll('.pw-toggle').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var input = document.getElementById(btn.getAttribute('data-target'));
+    if (!input) return;
+    var showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    btn.textContent = showing ? '👁' : '🙈';
+    btn.classList.toggle('revealed', !showing);
+    btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+  });
 });
 
 /* ---------------- misc ---------------- */
