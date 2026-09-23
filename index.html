@@ -622,10 +622,9 @@
       <div class="grabber"></div>
       <h3 id="sourceFormTitle">Add source</h3>
       <form id="sourceForm">
-        <div class="field"><label for="s_name">Name</label><input type="text" id="s_name" placeholder="e.g. Federal Bank" required></div>
-        <div class="two-col" id="s_balanceWrap">
-          <div class="field"><label for="s_balance" id="s_balanceLabel">Current balance (₹)</label><input type="number" step="0.01" id="s_balance" placeholder="0.00"></div>
-          <div class="field"><label for="s_last4">Last 4 digits</label><input type="text" maxlength="4" id="s_last4" placeholder="optional"></div>
+        <div class="field" id="s_nameWrap"><label for="s_name">Name</label><input type="text" id="s_name" placeholder="e.g. Federal Bank" required></div>
+        <div class="field" id="s_balanceWrap">
+          <label for="s_balance" id="s_balanceLabel">Current balance (₹)</label><input type="number" step="0.01" id="s_balance" placeholder="0.00">
         </div>
         <button type="submit" class="btn primary">Save source</button>
         <button type="button" class="btn danger" id="deleteSourceBtn" style="display:none;">Delete source</button>
@@ -777,7 +776,7 @@ function nowTime(){ var d=new Date(); return String(d.getHours()).padStart(2,'0'
 
 function defaultState(){
   return {
-    accounts: [ { id: uid(), type:'cash', name:'Cash', last4:'', openingBalance: 0 } ],
+    accounts: [ { id: uid(), type:'cash', name:'Cash', openingBalance: 0 } ],
     transactions: [],
     expenseCategories: DEFAULT_EXPENSE_CATS.map(function(c){ return {id:uid(), name:c.name, icon:c.icon}; }),
     incomeCategories: DEFAULT_INCOME_CATS.map(function(c){ return {id:uid(), name:c.name, icon:c.icon}; }),
@@ -1531,8 +1530,10 @@ function openSourceForm(type, existing){
   document.getElementById('sourceFormTitle').textContent = existing ? 'Edit source' : 'Add bank account';
   toggleSourceFields(type);
   document.getElementById('s_name').value = existing ? existing.name : '';
-  document.getElementById('s_last4').value = existing ? (existing.last4||'') : '';
   document.getElementById('s_balance').value = existing ? (existing.openingBalance!=null?existing.openingBalance:'') : '';
+  var isCash = type==='cash';
+  document.getElementById('s_nameWrap').style.display = isCash ? 'none' : '';
+  document.getElementById('s_name').required = !isCash;
   var delBtn = document.getElementById('deleteSourceBtn');
   delBtn.style.display = (existing && existing.type==='bank') ? '' : 'none';
   openOv('ovSource');
@@ -1544,9 +1545,10 @@ function toggleSourceFields(type){
 document.getElementById('sourceForm').addEventListener('submit', function(e){
   e.preventDefault();
   var type = e.target.getAttribute('data-type');
-  var name = document.getElementById('s_name').value.trim();
+  var isCash = type==='cash';
+  var name = isCash ? 'Cash' : document.getElementById('s_name').value.trim();
   if (!name){ showToast('Enter a name'); return; }
-  var payload = { type:type, name:name, last4: document.getElementById('s_last4').value.trim() };
+  var payload = { type:type, name:name };
   payload.openingBalance = parseFloat(document.getElementById('s_balance').value)||0;
   if (editingSourceId){
     var idx = state.accounts.findIndex(function(a){ return a.id===editingSourceId; });
@@ -1777,7 +1779,7 @@ function stripCreditCards(){
 function ensureCashAccount(){
   var hasCash = state.accounts.some(function(a){ return a.type==='cash'; });
   if (!hasCash){
-    state.accounts.unshift({ id: uid(), type:'cash', name:'Cash', last4:'', openingBalance: 0 });
+    state.accounts.unshift({ id: uid(), type:'cash', name:'Cash', openingBalance: 0 });
     saveState();
   }
 }
