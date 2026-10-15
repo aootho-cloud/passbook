@@ -818,6 +818,7 @@ function saveState(){
 var fmt = new Intl.NumberFormat('en-IN', {style:'currency', currency:'INR', maximumFractionDigits:0});
 var fmtDec = new Intl.NumberFormat('en-IN', {style:'currency', currency:'INR', maximumFractionDigits:2});
 function money(n, dec){ n = Number(n)||0; return (dec ? fmtDec : fmt).format(Math.abs(n)).replace('₹','₹'); }
+function roundMoney(n){ return Math.round((Number(n)||0)*100)/100; }
 function signedMoney(n){ n = Number(n)||0; return (n<0?'-':'') + money(n); }
 
 /* ---------------- balance calculation ---------------- */
@@ -851,6 +852,19 @@ function findCat(id, isIncome){
   return f || {name:'Other', icon:'•••'};
 }
 function accountById(id){ return state.accounts.find(function(a){ return a.id===id; }); }
+
+/* Stable newest-first order: by date, then by when the entry was first created.
+   Editing never changes createdAt or array position, so an edited entry stays put. */
+function sortTxns(list){
+  var pos = {};
+  state.transactions.forEach(function(t, i){ pos[t.id] = i; });
+  return list.slice().sort(function(a, b){
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    var ca = a.createdAt || 0, cb = b.createdAt || 0;
+    if (ca !== cb) return cb - ca;
+    return (pos[b.id] || 0) - (pos[a.id] || 0);
+  });
+}
 
 /* ---------------- date helpers ---------------- */
 function periodRange(period){
@@ -888,8 +902,52 @@ function showToast(msg){
 }
 
 /* ---------------- navigation ---------------- */
+/* ---- phone back = app back ----
+   Every open sheet/dialog and every non-root screen counts as a "layer".
+   While any layer is open we keep ONE extra history entry (a guard). The phone's
+   back button / back swipe pops that guard, which we turn into "close the top layer"
+   (the same thing the in-app back does). Only when nothing is open does back
+   leave the app. */
+var NAV_ROOT = 'transactions';
+var viewTrail = [];     // screens to return to, e.g. ['transactions','analytics']
+var ovStack = [];       // open overlays, topmost last
+var hasGuard = !!(window.history.state && window.history.state.pbGuard);
+var pendingBack = false, histSyncTimer = null;
+function layerDepth(){ return ovStack.length + viewTrail.length; }
+function scheduleHistorySync(){
+  if (histSyncTimer) return;
+  histSyncTimer = setTimeout(function(){ histSyncTimer = null; syncHistory(); }, 0);
+}
+function syncHistory(){
+  if (pendingBack) return;
+  var need = layerDepth() > 0;
+  try {
+    if (need && !hasGuard){ window.history.pushState({pbGuard:true}, ''); hasGuard = true; }
+    else if (!need && hasGuard){ pendingBack = true; hasGuard = false; window.history.back(); }
+  } catch(e){}
+}
+function handleBack(){
+  if (ovStack.length){ closeOv(ovStack[ovStack.length-1]); return; }
+  if (viewTrail.length){ goto(viewTrail.pop(), true); }
+}
+window.addEventListener('popstate', function(){
+  if (pendingBack){ pendingBack = false; syncHistory(); return; }  // our own cleanup
+  hasGuard = false;
+  handleBack();
+  syncHistory();
+});
+
 var currentView = 'home';
-function goto(view){
+function goto(view, fromBack){
+  if (!fromBack && view !== currentView){
+    if (view === NAV_ROOT) viewTrail = [];
+    else {
+      var ti = viewTrail.indexOf(view);
+      if (ti > -1) viewTrail = viewTrail.slice(0, ti);
+      else if (currentView !== 'home') viewTrail.push(currentView);
+    }
+    scheduleHistorySync();
+  }
   currentView = view;
   document.querySelectorAll('.view').forEach(function(v){ v.classList.remove('active'); });
   var el = document.getElementById('view-'+view);
@@ -911,10 +969,19 @@ document.getElementById('openCalendarBtn').addEventListener('click', function(){
 document.getElementById('calBackBtn').addEventListener('click', function(){ goto('transactions'); });
 
 /* ---------------- overlays ---------------- */
-function openOv(id){ document.getElementById(id).classList.add('show'); }
-function closeOv(id){ document.getElementById(id).classList.remove('show'); }
+function openOv(id){
+  document.getElementById(id).classList.add('show');
+  var i = ovStack.indexOf(id); if (i > -1) ovStack.splice(i, 1);
+  ovStack.push(id);
+  scheduleHistorySync();
+}
+function closeOv(id){
+  document.getElementById(id).classList.remove('show');
+  var i = ovStack.indexOf(id);
+  if (i > -1){ ovStack.splice(i, 1); scheduleHistorySync(); }
+}
 document.querySelectorAll('.overlay').forEach(function(ov){
-  ov.addEventListener('click', function(e){ if (e.target===ov) ov.classList.remove('show'); });
+  ov.addEventListener('click', function(e){ if (e.target===ov) closeOv(ov.id); });
 });
 
 function acctIcon(acc){
@@ -993,7 +1060,8 @@ function renderTransactions(){
       if (hay.indexOf(txnSearchQ)===-1) return false;
     }
     return true;
-  }).sort(function(a,b){ return (b.createdAt||0)-(a.createdAt||0); });
+  });
+  list = sortTxns(list);
 
   if (!list.length){
     wrap.innerHTML = '<div class="empty-state"><div class="em">🔍</div><div class="t">Nothing here</div><div class="s">Try a different month, filter, or search term.</div></div>';
@@ -1159,7 +1227,13 @@ document.getElementById('txnForm').addEventListener('submit', function(e){
 
   if (editingTxnId){
     var idx = state.transactions.findIndex(function(t){ return t.id===editingTxnId; });
-    if (idx>-1) state.transactions[idx] = Object.assign({}, state.transactions[idx], payload);
+    if (idx>-1){
+      var orig = state.transactions[idx];
+      var updated = Object.assign({}, orig, payload);
+      updated.id = orig.id;
+      if (orig.createdAt != null) updated.createdAt = orig.createdAt;
+      state.transactions[idx] = updated;   // same slot in the array
+    }
     showToast('Transaction updated');
   } else {
     payload.id = uid(); payload.createdAt = Date.now();
@@ -1275,7 +1349,7 @@ function renderAnalytics(){
   });
 
   var recentWrap = document.getElementById('homeRecent');
-  var recent = state.transactions.slice().sort(function(a,b){ return (b.createdAt||0)-(a.createdAt||0); }).slice(0,6);
+  var recent = sortTxns(state.transactions).slice(0,6);
   recentWrap.innerHTML='';
   if (!recent.length){
     recentWrap.innerHTML = '<div class="empty-state"><div class="em">📭</div><div class="t">No activity yet</div><div class="s">Add your first transaction with the + button.</div></div>';
@@ -1350,7 +1424,7 @@ function renderCalDayList(){
   if (!calSelectedDate){ titleEl.textContent='Select a date'; listEl.innerHTML=''; return; }
   var t = dayTotals(calSelectedDate);
   titleEl.textContent = formatDateLong(calSelectedDate) + ' · spent ' + money(t.exp);
-  var dayTxns = state.transactions.filter(function(x){ return x.date===calSelectedDate; }).sort(function(a,b){ return (b.createdAt||0)-(a.createdAt||0); });
+  var dayTxns = sortTxns(state.transactions.filter(function(x){ return x.date===calSelectedDate; }));
   listEl.innerHTML='';
   if (!dayTxns.length){ listEl.innerHTML = '<div class="empty-state" style="padding:20px 0;"><div class="s">No transactions on this date.</div></div>'; return; }
   dayTxns.forEach(function(t2){ listEl.appendChild(txnRowEl(t2)); });
@@ -1374,7 +1448,7 @@ function renderProfile(){
       row.innerHTML = '<div class="left" style="cursor:pointer;"><div class="acct-ic">'+acctIcon(acc)+'</div>'+
         '<div><div class="name">'+esc(acc.name)+'</div><div class="sub">'+(acc.type==='cash'?'Cash':'Bank account')+'</div></div></div>'+
         '<div style="display:flex; align-items:center; gap:2px;">'+
-          '<div class="amt">'+money(val)+'</div>'+
+          '<div class="amt">'+signedMoney(val)+'</div>'+
           (isBank ? '<button class="icon-btn" data-act="edit" aria-label="Edit source" style="width:30px; height:30px; font-size:12px; border:none; background:none; margin-left:4px;">✎</button>'+
                     '<button class="icon-btn" data-act="delete" aria-label="Delete source" style="width:30px; height:30px; font-size:13px; border:none; background:none; color:var(--danger);">🗑️</button>' : '')+
         '</div>';
@@ -1541,7 +1615,8 @@ function openSourceForm(type, existing){
   document.getElementById('sourceFormTitle').textContent = existing ? 'Edit source' : 'Add bank account';
   toggleSourceFields(type);
   document.getElementById('s_name').value = existing ? existing.name : '';
-  document.getElementById('s_balance').value = existing ? (existing.openingBalance!=null?existing.openingBalance:'') : '';
+  // Show the LIVE balance (opening balance + all transactions), same as the list.
+  document.getElementById('s_balance').value = existing ? roundMoney(computeAccountBalance(existing)) : '';
   var isCash = type==='cash';
   document.getElementById('s_nameWrap').style.display = isCash ? 'none' : '';
   document.getElementById('s_name').required = !isCash;
@@ -1560,13 +1635,23 @@ document.getElementById('sourceForm').addEventListener('submit', function(e){
   var name = isCash ? 'Cash' : document.getElementById('s_name').value.trim();
   if (!name){ showToast('Enter a name'); return; }
   var payload = { type:type, name:name };
-  payload.openingBalance = parseFloat(document.getElementById('s_balance').value)||0;
+  var entered = parseFloat(document.getElementById('s_balance').value)||0;
   if (editingSourceId){
     var idx = state.accounts.findIndex(function(a){ return a.id===editingSourceId; });
-    if (idx>-1) state.accounts[idx] = Object.assign({}, state.accounts[idx], payload);
+    if (idx>-1){
+      var acc = state.accounts[idx];
+      var current = roundMoney(computeAccountBalance(acc));
+      // Only touch the opening balance if the user actually changed the balance.
+      // Transactions are never modified; the opening balance absorbs the difference.
+      if (roundMoney(entered) !== current){
+        payload.openingBalance = roundMoney((Number(acc.openingBalance)||0) + (entered - current));
+      }
+      state.accounts[idx] = Object.assign({}, acc, payload);
+    }
     showToast('Source updated');
   } else {
     payload.id = uid();
+    payload.openingBalance = entered;
     state.accounts.push(payload);
     showToast('Source added');
   }
