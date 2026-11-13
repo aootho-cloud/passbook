@@ -1771,7 +1771,7 @@ document.getElementById('exportRow').addEventListener('click', async function(){
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a'); a.href=url; a.download=filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 2000); // Safari needs the URL alive while the download starts
       showToast('Backup downloaded');
     } catch(e2){ showToast('Could not export backup'); }
   }
@@ -1929,60 +1929,185 @@ function handleAuthChange(user){
   if (logoutRow) logoutRow.style.display = (firebaseReady && currentUser) ? '' : 'none';
 }
 
-function cloudDocRef(uid){
-  return fbDb.collection('users').doc(uid).collection('passbook').doc('data');
-}
-function pullFromCloudOnLogin(uid){
-  cloudDocRef(uid).get().then(function(snap){
-    if (snap.exists){
-      var remote = snap.data();
-      state = Object.assign(defaultState(), remote.state || {});
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
-      applyTheme(); updateIdentity(); refreshAll(); setupHomeScreenManifest();
-      document.getElementById('onboarding').style.display = state.onboarded ? 'none' : 'flex';
-      showToast('Synced with your account');
-    } else {
-      var hasRealLocalData = state.transactions.length>0 || state.accounts.some(function(a){ return a.type==='bank'; });
-      if (hasRealLocalData){
-        confirmDialog('Back up this device\'s data?', 'Upload what\'s already on this device to your new account.', function(){
-          cloudDocRef(uid).set({ state: state, updatedAt: Date.now() });
-          showToast('Backed up to your account');
-        });
-      } else {
-        cloudDocRef(uid).set({ state: state, updatedAt: Date.now() });
-      }
+/* Cloud layout (v2) — users/{uid}/passbook/…
+     data            → accounts, categories, settings, profile (no transactions)
+     tx-2026, tx-2027 → { list: [...] } that year's transactions
+   Each Firestore document is capped at 1 MB, so keeping every transaction in
+   one doc would eventually stop saving. One doc per year gives each year its
+   own 1 MB (~5,000 transactions). Old single-doc data is moved over
+   automatically on first load, and the original doc is copied to
+   "data-backup-v1" first as a safety net (written once, never overwritten). */
+var TX_PREFIX = 'tx-';
+var lastMainJ = null, lastYearJ = {}, cloudLoaded = false, migrationBackup = null;
+var DOC_WARN_BYTES = 900 * 1024;
+
+function pbCol(uid){ return fbDb.collection('users').doc(uid).collection('passbook'); }
+function cloudDocRef(uid){ return pbCol(uid).doc('data'); }
+
+// key-sorted JSON, so the same data always compares equal whatever order Firestore returns keys in
+function stable(v){
+  return JSON.stringify(v, function(k, x){
+    if (x && typeof x === 'object' && !Array.isArray(x)){
+      return Object.keys(x).sort().reduce(function(o, kk){ o[kk] = x[kk]; return o; }, {});
     }
-    attachCloudListener(uid);
-  }).catch(function(e){ console.warn('cloud sync failed', e); });
+    return x;
+  });
 }
-// Keeps every logged-in device in sync live: whenever the Firestore doc changes
-// (from THIS device or any other), this fires. `hasPendingWrites` is true only for
-// this client's own not-yet-acknowledged write — that's our own change echoing
-// back, already applied locally, so it's skipped. Anything else is a genuine
-// change from another device (or the console), which gets pulled in here.
+function txYear(t){
+  var y = String((t && t.date) || '').slice(0, 4);
+  return /^\d{4}$/.test(y) ? y : 'undated';
+}
+function splitState(s){
+  var clean = JSON.parse(JSON.stringify(s)); // drops undefined values Firestore would reject
+  var main = {}, years = {};
+  Object.keys(clean).forEach(function(k){ if (k !== 'transactions') main[k] = clean[k]; });
+  (clean.transactions || []).forEach(function(t){
+    var y = txYear(t);
+    (years[y] = years[y] || []).push(t);
+  });
+  return { main: main, years: years };
+}
+// Rebuilds the full state from the collection's docs. Also picks up transactions still
+// sitting inside the old single "data" doc (not migrated yet, or written by a device
+// still running the old version) and merges them in by id.
+function readCloud(qs){
+  var rawMain = null, years = {}, hasBackup = false;
+  qs.forEach(function(doc){
+    if (doc.id === 'data') rawMain = doc.data().state || {};
+    else if (doc.id === 'data-backup-v1') hasBackup = true;
+    else if (doc.id.indexOf(TX_PREFIX) === 0){
+      var l = doc.data().list;
+      years[doc.id.slice(TX_PREFIX.length)] = Array.isArray(l) ? l : [];
+    }
+  });
+  if (!rawMain) return null;
+  var tx = [], seen = {};
+  Object.keys(years).sort().forEach(function(y){
+    years[y].forEach(function(t){ tx.push(t); if (t && t.id) seen[t.id] = true; });
+  });
+  var legacy = Array.isArray(rawMain.transactions) ? rawMain.transactions : [];
+  legacy.forEach(function(t){ if (t && !(t.id && seen[t.id])) tx.push(t); });
+  var s = Object.assign({}, rawMain);
+  s.transactions = tx;
+  var yearJ = {};
+  Object.keys(years).forEach(function(y){ if (years[y].length) yearJ[y] = stable(years[y]); });
+  return { state: s, rawMain: rawMain, mainJ: stable(rawMain), yearJ: yearJ, needsMigration: legacy.length > 0, hasBackup: hasBackup };
+}
+function sameYearJ(a, b){
+  var ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  return ka.every(function(k){ return a[k] === b[k]; });
+}
+function applyCloudState(s){
+  state = Object.assign(defaultState(), s);
+  if (!state.profile) state.profile = { name:'', photo:null };
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
+  applyTheme(); updateIdentity(); refreshAll(); setupHomeScreenManifest();
+  document.getElementById('onboarding').style.display = state.onboarded ? 'none' : 'flex';
+}
+
+function pullFromCloudOnLogin(uid){
+  attachCloudListener(uid); // the listener's first snapshot does the initial load
+}
+
+// Keeps every logged-in device in sync live. hasPendingWrites means our own write
+// echoing back (already applied locally), so it's skipped. A save waiting in the
+// debounce also wins over an incoming snapshot, so a half-typed edit isn't clobbered.
 var cloudUnsub = null;
 function attachCloudListener(uid){
   detachCloudListener();
-  cloudUnsub = cloudDocRef(uid).onSnapshot(function(snap){
-    if (!snap.exists || snap.metadata.hasPendingWrites) return;
-    var remote = snap.data();
-    state = Object.assign(defaultState(), remote.state || {});
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
-    applyTheme(); updateIdentity(); refreshAll(); setupHomeScreenManifest();
-    document.getElementById('onboarding').style.display = state.onboarded ? 'none' : 'flex';
-  }, function(err){ console.warn('cloud listener error', err); });
+  cloudUnsub = pbCol(uid).onSnapshot(function(qs){
+    var r = readCloud(qs);
+
+    if (!cloudLoaded){
+      clearTimeout(pushDebounceTimer); pushDebounceTimer = null;
+      cloudLoaded = true;
+      if (!r){
+        // brand-new account: offer to upload what this device already has
+        lastMainJ = null; lastYearJ = {};
+        var hasRealLocalData = state.transactions.length>0 || state.accounts.some(function(a){ return a.type==='bank'; });
+        if (hasRealLocalData){
+          confirmDialog('Back up this device\'s data?', 'Upload what\'s already on this device to your new account.', function(){
+            pushNow();
+            showToast('Backed up to your account');
+          });
+        } else {
+          pushNow();
+        }
+        return;
+      }
+      lastMainJ = r.mainJ; lastYearJ = r.yearJ;
+      applyCloudState(r.state);
+      if (r.needsMigration){ if (!r.hasBackup) migrationBackup = r.rawMain; pushNow(); }
+      showToast('Synced with your account');
+      return;
+    }
+
+    if (!r || qs.metadata.hasPendingWrites || pushDebounceTimer) return;
+    if (!r.needsMigration && r.mainJ === lastMainJ && sameYearJ(r.yearJ, lastYearJ)) return;
+    lastMainJ = r.mainJ; lastYearJ = r.yearJ;
+    applyCloudState(r.state);
+    if (r.needsMigration){ if (!r.hasBackup) migrationBackup = r.rawMain; pushNow(); }
+  }, function(err){
+    console.warn('cloud listener error', err);
+    showToast(err.code === 'permission-denied'
+      ? 'Sync blocked — check the Firestore security rules'
+      : 'Sync problem — ' + (err.code || err.message));
+  });
 }
 function detachCloudListener(){
   if (cloudUnsub){ cloudUnsub(); cloudUnsub = null; }
+  cloudLoaded = false; lastMainJ = null; lastYearJ = {}; migrationBackup = null;
 }
+
 var pushDebounceTimer = null;
 function pushToCloud(){
   if (!firebaseReady || !currentUser) return;
   clearTimeout(pushDebounceTimer);
-  pushDebounceTimer = setTimeout(function(){
-    try { cloudDocRef(currentUser.uid).set({ state: state, updatedAt: Date.now() }); }
-    catch(e){ console.warn('cloud save failed', e); }
-  }, 400);
+  pushDebounceTimer = setTimeout(pushNow, 400);
+}
+// Writes only the docs that actually changed: usually just the current year's
+// transactions doc, or just "data" when a setting or account changes.
+function pushNow(){
+  clearTimeout(pushDebounceTimer); pushDebounceTimer = null;
+  if (!firebaseReady || !currentUser || !cloudLoaded) return;
+  var col = pbCol(currentUser.uid), parts = splitState(state), batch = fbDb.batch();
+  var now = Date.now(), n = 0, newYearJ = {}, bigYear = null;
+
+  var mj = stable(parts.main);
+  if (mj !== lastMainJ){ batch.set(col.doc('data'), { state: parts.main, updatedAt: now, schema: 2 }); n++; }
+
+  var years = {};
+  Object.keys(parts.years).concat(Object.keys(lastYearJ)).forEach(function(y){ years[y] = true; });
+  Object.keys(years).forEach(function(y){
+    var list = parts.years[y] || [], j = stable(list);
+    if (list.length){ newYearJ[y] = j; if (j.length > DOC_WARN_BYTES) bigYear = y; }
+    if (list.length ? j === lastYearJ[y] : lastYearJ[y] === undefined) return;
+    if (list.length) batch.set(col.doc(TX_PREFIX + y), { list: list, updatedAt: now });
+    else batch.delete(col.doc(TX_PREFIX + y)); // every transaction of that year was deleted
+    n++;
+  });
+
+  if (migrationBackup){
+    batch.set(col.doc('data-backup-v1'), { state: migrationBackup, savedAt: now });
+    migrationBackup = null; n++;
+  }
+  if (!n) return;
+
+  var prevYearJ = lastYearJ;
+  lastMainJ = mj; lastYearJ = newYearJ;
+  if (bigYear) showToast('Heads up: ' + bigYear + '\'s transactions are close to the cloud size limit');
+
+  batch.commit().catch(function(err){
+    console.warn('cloud save failed', err);
+    // forget what we thought was saved, so the next change retries everything
+    lastMainJ = null;
+    lastYearJ = {};
+    Object.keys(prevYearJ).concat(Object.keys(newYearJ)).forEach(function(y){ lastYearJ[y] = '!'; });
+    showToast(err.code === 'permission-denied'
+      ? 'Could not save — check the Firestore security rules'
+      : 'Could not save to your account — ' + (err.code || err.message));
+  });
 }
 
 /* ---------------- auth gate (full-screen, blocks the app until logged in) ---------------- */
